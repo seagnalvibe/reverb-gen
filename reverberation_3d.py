@@ -164,23 +164,47 @@ def validate_freqs(freqs_khz, cfg):
     return f
 
 
-def _urlretrieve(url, path, timeout=180):
-    """Telechargement robuste : fichier temporaire puis renommage atomique."""
+def _urlretrieve(url, path, timeout=180, retries=2):
+    """Telechargement direct (sans proxy) : essais + tmp + renommage atomique.
+
+    En cas d'echec reseau, leve RuntimeError avec l'URL et la piste fichier
+    local (--bathy FICHIER.tif / --chl FICHIER.csv).
+    """
     import shutil
     import tempfile
+    import time
     import urllib.request
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".part")
-    try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=timeout) as r:
-            shutil.copyfileobj(r, out)
-        os.replace(tmp, path)
-    except Exception:
+    last = None
+    for attempt in range(1, max(1, int(retries)) + 1):
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".part")
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-    return path
+            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=timeout) as r:
+                shutil.copyfileobj(r, out)
+            os.replace(tmp, path)
+            return path
+        except Exception as e:
+            last = e
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise RuntimeError(
+        "telechargement impossible apres %d essai(s) (connexion directe, sans proxy).\n"
+        "URL : %s\nTelecharge le fichier manuellement sur un poste autorise, puis relance "
+        "avec le chemin local : --bathy FICHIER.tif ou --chl FICHIER.csv\n"
+        "derniere erreur : %r" % (max(1, int(retries)), url, last))
+
+
+def _find_cached(data_dir, outdir, name):
+    """Premier fichier existant parmi data_dir/name puis outdir/name (None sinon)."""
+    for d in (data_dir, outdir):
+        if d:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+    return None
 
 
 # ----------------------------------------------------------------------------
@@ -316,11 +340,8 @@ def season_tag(date):
     return "11-16"
 
 
-def download_chlorophyll_emodnet(path, cfg, date, lat, lon):
-    """Source EMODnet : CSV ERDDAP pour la zone et la saison de la date.
-
-    DIVAnd saisonnier Mediterranee (profils 0-600 m), saisons 1992 a 2021.
-    """
+def chlorophyll_emodnet_url(cfg, date, lat, lon):
+    """URL ERDDAP du CSV chlorophylle EMODnet (zone + saison, profils 0-600 m)."""
     from urllib.parse import quote
     s = season_tag(date)
     year = min(date.year, 2021)  # jeu de donnees : saisons 1992 a 2021
@@ -329,23 +350,22 @@ def download_chlorophyll_emodnet(path, cfg, date, lat, lon):
              % (year, s, year, s,
                 float(lat.min()) - 0.25, float(lat.max()) + 0.25,
                 float(lon.min()) - 0.25, float(lon.max()) + 0.25))
-    url = cfg["chlorophyll"]["emodnet_url"] + quote(query, safe="?()[]:.,-=&")
+    return cfg["chlorophyll"]["emodnet_url"] + quote(query, safe="?()[]:.,-=&")
+
+
+def download_chlorophyll_emodnet(path, cfg, date, lat, lon, timeout=180, retries=2):
+    """Telecharge le CSV chlorophylle EMODnet (DIVAnd saisonnier Med, 0-600 m)."""
+    url = chlorophyll_emodnet_url(cfg, date, lat, lon)
     print("Telechargement chlorophylle EMODnet :", url)
-    _urlretrieve(url, path)
-    return path
+    return _urlretrieve(url, path, timeout=timeout, retries=retries)
 
 
 # Alias historique : --chl auto designait la source EMODnet.
 download_chlorophyll = download_chlorophyll_emodnet
 
 
-def download_chlorophyll_erddap(path, cfg, date, lat, lon):
-    """Source ERDDAP CoastWatch : MODIS Aqua L3 mondial 4 km.
-
-    Climatologie du mois de la date : produit journalier echantillonne au
-    pas 12 (tous les memes jours de mois 2003-2021), chlorophylle de
-    surface satellite uniquement.
-    """
+def chlorophyll_erddap_url(cfg, date, lat, lon):
+    """URL ERDDAP CoastWatch : MODIS Aqua L3, climatologie du mois (pas 12)."""
     from urllib.parse import quote
     mm = "%02d" % date.month
     query = ("?chlorophyll"
@@ -354,10 +374,14 @@ def download_chlorophyll_erddap(path, cfg, date, lat, lon):
              % (mm,
                 float(lat.min()) - 0.25, float(lat.max()) + 0.25,
                 float(lon.min()) - 0.25, float(lon.max()) + 0.25))
-    url = cfg["chlorophyll"]["erddap_url"] + quote(query, safe="?()[]:.,-=&")
+    return cfg["chlorophyll"]["erddap_url"] + quote(query, safe="?()[]:.,-=&")
+
+
+def download_chlorophyll_erddap(path, cfg, date, lat, lon, timeout=180, retries=2):
+    """Telecharge le CSV MODIS Aqua (surface satellite uniquement)."""
+    url = chlorophyll_erddap_url(cfg, date, lat, lon)
     print("Telechargement chlorophylle ERDDAP (MODIS Aqua) :", url)
-    _urlretrieve(url, path)
-    return path
+    return _urlretrieve(url, path, timeout=timeout, retries=retries)
 
 
 def read_chlorophyll_modis_csv(path):
@@ -506,27 +530,44 @@ def _snap(v, res=1.0 / 960.0):
     return round(round(v / res) * res, 6)
 
 
-def download_bathymetry(outdir, cfg, lat, lon):
-    """Telecharge le DTM EMODnet pour la grille + buffer, retourne le chemin.
+def bathymetry_url_tif(cfg, lat, lon):
+    """(url WCS, nom de fichier) du DTM EMODnet pour la grille + buffer.
 
     Le nom de fichier embarque l'etendue (bathy_latmin_latmax_lonmin_lonmax)
     car le GeoTIFF WCS n'inclut pas de geotransform.
     """
-    import os
     buf = cfg["bathymetry"]["buffer_deg"]
     la0, la1 = _snap(float(lat.min()) - buf), _snap(float(lat.max()) + buf)
     lo0, lo1 = _snap(float(lon.min()) - buf), _snap(float(lon.max()) + buf)
     q = ("?service=WCS&version=2.0.1&request=GetCoverage&coverageId=%s"
          "&SUBSET=Lat(%.6f,%.6f)&SUBSET=Long(%.6f,%.6f)&FORMAT=image%%2Ftiff"
          % (cfg["bathymetry"]["coverage"], la0, la1, lo0, lo1))
-    url = cfg["bathymetry"]["wcs"] + q
-    tif = os.path.join(outdir, "bathy_%.6f_%.6f_%.6f_%.6f.tif" % (la0, la1, lo0, lo1))
-    if os.path.exists(tif):
-        print("Bathymetrie EMODnet deja telechargee :", tif)
-        return tif
+    name = "bathy_%.6f_%.6f_%.6f_%.6f.tif" % (la0, la1, lo0, lo1)
+    return cfg["bathymetry"]["wcs"] + q, name
+
+
+def download_bathymetry(outdir, cfg, lat, lon, timeout=180, retries=2,
+                        data_dir=None, offline=False):
+    """DTM EMODnet (WCS) : cache local d'abord (--data-dir puis outdir).
+
+    En mode --offline aucun appel reseau : il faut le fichier local
+    (--bathy FICHIER.tif ou present dans --data-dir/outdir), sinon erreur
+    avec l'URL a telecharger manuellement.
+    """
+    import os
+    url, name = bathymetry_url_tif(cfg, lat, lon)
+    cached = _find_cached(data_dir, outdir, name)
+    if cached:
+        print("Bathymetrie EMODnet trouvee en cache :", cached)
+        return cached
+    dest = os.path.join(outdir, name)
+    if offline:
+        raise RuntimeError(
+            "mode --offline : %s absent (cherche dans --data-dir puis outdir).\n"
+            "Telecharge manuellement :\n  %s\npuis relance avec --bathy %s"
+            % (dest, url, os.path.join(data_dir or outdir, name)))
     print("Telechargement bathymetrie EMODnet :", url)
-    _urlretrieve(url, tif)
-    return tif
+    return _urlretrieve(url, dest, timeout=timeout, retries=retries)
 
 
 def read_bathymetry_tif(path):
@@ -839,7 +880,8 @@ def quicklook_png(path, sv_db, depth_m, freqs_khz, lat, lon, hours_utc, cfg,
 # Main
 # ----------------------------------------------------------------------------
 def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
-         freqs=None, hours=None, date_str=None):
+         freqs=None, hours=None, date_str=None,
+         timeout=180, retries=2, data_dir=None, offline=False):
     date = dt.datetime.strptime(date_str or cfg["date"], "%Y-%m-%d")
     lat = np.arange(cfg["lat_min"], cfg["lat_max"] + 1e-9, cfg["dlat"])
     lon = np.arange(cfg["lon_min"], cfg["lon_max"] + 1e-9, cfg["dlon"])
@@ -862,7 +904,9 @@ def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
     bathy_src = bathy_src or cfg["bathymetry"]["source"]
     if bathy_src:
         if bathy_src == "auto":
-            tif = download_bathymetry(outdir, cfg, lat, lon)
+            tif = download_bathymetry(outdir, cfg, lat, lon, timeout=timeout,
+                                      retries=retries, data_dir=data_dir,
+                                      offline=offline)
         else:
             tif = bathy_src
         lats_b, lons_b, depth_b = read_bathymetry_tif(tif)
@@ -878,16 +922,29 @@ def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
     # "emodnet" (DIVAnd Med) ou "erddap" (MODIS Aqua mondial) ou un CSV.
     chl_grid, p3, p_col, chl_source = None, None, None, None
     if chl_src and chl_src != "none":
-        if chl_src in ("emodnet", "auto"):     # auto = alias historique
-            chl_csv = os.path.join(outdir, "chlorophyll_emodnet.csv")
-            if not os.path.exists(chl_csv):
-                download_chlorophyll_emodnet(chl_csv, cfg, date, lat, lon)
-            chl_source = "emodnet"
-        elif chl_src == "erddap":
-            chl_csv = os.path.join(outdir, "chlorophyll_erddap_modis.csv")
-            if not os.path.exists(chl_csv):
-                download_chlorophyll_erddap(chl_csv, cfg, date, lat, lon)
-            chl_source = "erddap"
+        if chl_src in ("emodnet", "auto", "erddap"):
+            chl_source = "erddap" if chl_src == "erddap" else "emodnet"
+            name = ("chlorophyll_erddap_modis.csv" if chl_source == "erddap"
+                    else "chlorophyll_emodnet.csv")
+            chl_csv = _find_cached(data_dir, outdir, name)
+            if chl_csv is None:
+                if offline:
+                    url = (chlorophyll_erddap_url(cfg, date, lat, lon)
+                           if chl_source == "erddap"
+                           else chlorophyll_emodnet_url(cfg, date, lat, lon))
+                    raise RuntimeError(
+                        "mode --offline : %s absent (cherche dans --data-dir puis "
+                        "outdir).\nTelecharge manuellement :\n  %s\npuis relance "
+                        "avec --chl %s"
+                        % (os.path.join(outdir, name), url,
+                           os.path.join(data_dir or outdir, name)))
+                chl_csv = os.path.join(outdir, name)
+                if chl_source == "emodnet":
+                    download_chlorophyll_emodnet(chl_csv, cfg, date, lat, lon,
+                                                 timeout=timeout, retries=retries)
+                else:
+                    download_chlorophyll_erddap(chl_csv, cfg, date, lat, lon,
+                                                timeout=timeout, retries=retries)
         else:
             chl_csv = chl_src
             hdr = open(chl_csv).readline()
@@ -996,6 +1053,15 @@ if __name__ == "__main__":
     ap.add_argument("--bathy", default=None, metavar="FICHIER|auto",
                     help="GeoTIFF EMODnet, 'auto' pour le telecharger via WCS, "
                          "ou rien pour la bathymetrie synthetique")
+    ap.add_argument("--timeout", type=float, default=180.0,
+                    help="timeout des telechargements directs (s), defaut 180")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="nombre d'essais par telechargement, defaut 2")
+    ap.add_argument("--data-dir", default=None,
+                    help="dossier de cache prioritaire pour les CSV/TIF telecharges")
+    ap.add_argument("--offline", action="store_true",
+                    help="aucun appel reseau : exige les fichiers locaux "
+                         "(--chl/--bathy FICHIER ou --data-dir)")
     args = ap.parse_args()
     cfg = copy.deepcopy(CONFIG)
     if args.config:
@@ -1016,4 +1082,6 @@ if __name__ == "__main__":
         chl_src = None
     bathy_src = args.bathy or cfg["bathymetry"]["source"]
     main(cfg, args.modele, chl_src=chl_src, bathy_src=bathy_src,
-         freqs=freqs, hours=hours, date_str=args.date)
+         freqs=freqs, hours=hours, date_str=args.date,
+         timeout=args.timeout, retries=args.retries,
+         data_dir=args.data_dir, offline=args.offline)

@@ -220,6 +220,13 @@ def main(argv=None):
     ap.add_argument("--slice-depths", default="0,120,400",
                     help="profondeurs des cartes (m), ex. '0,120,400'")
     ap.add_argument("--transect-hour", type=int, default=14)
+    ap.add_argument("--timeout", type=float, default=180.0,
+                    help="timeout des telechargements directs (s)")
+    ap.add_argument("--retries", type=int, default=2)
+    ap.add_argument("--data-dir", default=None,
+                    help="dossier de cache prioritaire pour les CSV/TIF telecharges")
+    ap.add_argument("--offline", action="store_true",
+                    help="aucun appel reseau : exige les fichiers locaux")
     args = ap.parse_args(argv)
 
     cfg, zone = build_cfg(args)
@@ -231,7 +238,9 @@ def main(argv=None):
             chl_src = None
         bathy_src = args.bathy or cfg["bathymetry"]["source"]
         r3d.main(cfg, args.modele, chl_src=chl_src, bathy_src=bathy_src,
-                 freqs=freqs, hours=hours, date_str=args.date)
+                 freqs=freqs, hours=hours, date_str=args.date,
+                 timeout=args.timeout, retries=args.retries,
+                 data_dir=args.data_dir, offline=args.offline)
 
     f = load_nc(cfg["outdir"])
     hours = [int(h) for h in args.slice_hours.split(",")]

@@ -115,6 +115,20 @@ rejetées (`validate_freqs`).
   aux deux (atténuation + backscatter, même section efficace).
 - Absorption évaluée à la profondeur = portée (approximation).
 
+### Téléchargements : cache, hors-ligne, erreurs réseau
+
+- Les téléchargements sont en cache (`bathy_*.tif`, `chlorophyll_*.csv`) dans
+  `--outdir`, ou d'abord dans `--data-dir` si fourni. Aucun proxy n'est
+  utilisé : connexions directes uniquement.
+- `--timeout 180 --retries 2` : réglages des téléchargements (défaut 180 s, 2 essais).
+- `--offline` : aucun appel réseau ; exige les fichiers locaux (`--chl FICHIER.csv`,
+  `--bathy FICHIER.tif`, ou présents dans `--data-dir`/`outdir`). Si un fichier
+  manque, l'erreur imprime l'URL exacte à télécharger manuellement sur un poste
+  autorisé, puis à rejouer en local.
+- En cas d'échec réseau (poste sans accès direct), même principe : l'URL est
+  imprimée dans le message d'erreur, télécharge-la à la main, puis relance avec
+  le chemin local.
+
 ## Tests
 
 ```bash

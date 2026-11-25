@@ -109,5 +109,39 @@ class TestChlorophyll(unittest.TestCase):
         self.assertAlmostEqual(float(out[-1, 1, 1]), 0.5, places=5)
 
 
+class TestDownloadsOffline(unittest.TestCase):
+    def test_url_builders(self):
+        cfg = r3d.CONFIG
+        d = r3d.dt.datetime(2026, 11, 17)
+        lat = np.array([42.0, 43.2])
+        lon = np.array([3.0, 4.8])
+        u = r3d.chlorophyll_emodnet_url(cfg, d, lat, lon)
+        self.assertIn("Water_body_chlorophyll_a", u)
+        self.assertIn("2021-11-16", u)
+        u2 = r3d.chlorophyll_erddap_url(cfg, d, lat, lon)
+        self.assertIn("2003-11-16", u2)
+        ub, name = r3d.bathymetry_url_tif(cfg, lat, lon)
+        self.assertIn("coverageId=", ub)
+        self.assertIn("SUBSET=Lat(", ub)
+        self.assertTrue(name.startswith("bathy_") and name.endswith(".tif"))
+
+    def test_offline_missing_file_raises(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = r3d.copy.deepcopy(r3d.CONFIG)
+            cfg["outdir"] = td
+            lat = np.array([42.0, 43.2])
+            lon = np.array([3.0, 4.8])
+            with self.assertRaises(RuntimeError) as cm:
+                r3d.download_bathymetry(td, cfg, lat, lon, offline=True)
+            self.assertIn("ows.emodnet-bathymetry.eu", str(cm.exception))
+
+    def test_find_cached(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(r3d._find_cached(td, td, "x.tif"))
+            p = os.path.join(td, "x.tif")
+            open(p, "w").close()
+            self.assertEqual(r3d._find_cached(td, td, "x.tif"), p)
+
+
 if __name__ == "__main__":
     unittest.main()
