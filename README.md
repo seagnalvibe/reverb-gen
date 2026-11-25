@@ -38,6 +38,31 @@ python reverberation_3d.py --modele searay
 python reverberation_3d.py --config config.example.json
 ```
 
+## Carte de zone + affichage : `zone_map.py`
+
+Génère la carte S_v d'une zone prédéfinie (ou `--bbox`) puis produit les
+figures dans `<outdir>/figures/` : cartes horizontales `map_*.png`
+(isobathes 200/1000 m en overlay) et coupes verticales `transect_*.png`.
+
+```bash
+# zone Toulon-Calvi, vraie bathymetrie EMODnet + chlorophylle DIVAnd
+python zone_map.py --zone toulon_calvi --bathy auto --chl emodnet
+
+# demo rapide sans telechargement (bathy synthetique, Golfe du Lion)
+python zone_map.py --zone golfe_du_lion --freqs 0.1,12,1000 --hours 2,14
+
+# re-affichage seul a partir du netCDF existant
+python zone_map.py --zone toulon_calvi --no-run --transect toulon calvi
+
+# zone libre + options d'affichage
+python zone_map.py --bbox 42.4 43.3 5.8 9.0 --transect toulon calvi \
+    --slice-freq 12 --slice-depths 0,120,400 --slice-hours 2,14
+```
+
+Zones : `golfe_du_lion`, `toulon_calvi`. Points nommés pour `--transect` :
+`toulon`, `calvi`, `marseille`, `nice`, `ajaccio`, `banyuls`.
+
+
 Options : `--modele apl_uw|searay`, `--outdir`, `--config`, `--freqs`,
 `--freqs-log KMIN KMAX N`, `--hours`, `--date`, `--chl emodnet|erddap|CSV`,
 `--bathy auto|FICHIER.tif`. Les fréquences hors [0.1, 1000] kHz sont
