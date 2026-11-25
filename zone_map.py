@@ -227,6 +227,8 @@ def main(argv=None):
                     help="dossier de cache prioritaire pour les CSV/TIF telecharges")
     ap.add_argument("--offline", action="store_true",
                     help="aucun appel reseau : exige les fichiers locaux")
+    ap.add_argument("--user-agent", default=None,
+                    help="User-Agent envoye (defaut : identifiant reverb-gen)")
     args = ap.parse_args(argv)
 
     cfg, zone = build_cfg(args)
@@ -240,7 +242,8 @@ def main(argv=None):
         r3d.main(cfg, args.modele, chl_src=chl_src, bathy_src=bathy_src,
                  freqs=freqs, hours=hours, date_str=args.date,
                  timeout=args.timeout, retries=args.retries,
-                 data_dir=args.data_dir, offline=args.offline)
+                 data_dir=args.data_dir, offline=args.offline,
+                 user_agent=args.user_agent)
 
     f = load_nc(cfg["outdir"])
     hours = [int(h) for h in args.slice_hours.split(",")]

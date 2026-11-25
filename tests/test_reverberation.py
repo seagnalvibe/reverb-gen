@@ -142,6 +142,15 @@ class TestDownloadsOffline(unittest.TestCase):
             open(p, "w").close()
             self.assertEqual(r3d._find_cached(td, td, "x.tif"), p)
 
+    def test_build_request_headers(self):
+        req = r3d._build_request("https://example.org/x", accept="image/tiff")
+        self.assertEqual(req.get_header("User-agent"), r3d.DEFAULT_USER_AGENT)
+        self.assertEqual(req.get_header("Accept"), "image/tiff")
+        self.assertIn("reverb-gen", r3d.DEFAULT_USER_AGENT)
+        req2 = r3d._build_request("https://example.org/x", user_agent="mon-projet/1.0 (a@b.c)")
+        self.assertEqual(req2.get_header("User-agent"), "mon-projet/1.0 (a@b.c)")
+        self.assertEqual(req2.get_header("Accept"), "*/*")
+
 
 if __name__ == "__main__":
     unittest.main()

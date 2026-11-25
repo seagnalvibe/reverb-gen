@@ -121,6 +121,11 @@ rejetées (`validate_freqs`).
   `--outdir`, ou d'abord dans `--data-dir` si fourni. Aucun proxy n'est
   utilisé : connexions directes uniquement.
 - `--timeout 180 --retries 2` : réglages des téléchargements (défaut 180 s, 2 essais).
+- En-têtes HTTP : `User-Agent` descriptif par défaut
+  (`reverb-gen/1.0 (+https://github.com/seagnalvibe/reverb-gen)`), surchargeable
+  avec `--user-agent 'mon-projet/1.0 (contact@ex.org)'` — certains serveurs de
+  données ouverts exigent un UA non standard : identifiez votre client.
+  `Accept` est adapté au contenu (`image/tiff` pour le WCS, `text/csv` pour ERDDAP).
 - `--offline` : aucun appel réseau ; exige les fichiers locaux (`--chl FICHIER.csv`,
   `--bathy FICHIER.tif`, ou présents dans `--data-dir`/`outdir`). Si un fichier
   manque, l'erreur imprime l'URL exacte à télécharger manuellement sur un poste

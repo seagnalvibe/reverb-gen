@@ -76,6 +76,10 @@ import struct
 import numpy as np
 from scipy.io import netcdf_file
 
+# User-Agent envoye par defaut (identifie le client, comme demande par les
+# serveurs de donnees ouverts type NOAA CoastWatch / EMODnet).
+DEFAULT_USER_AGENT = "reverb-gen/1.0 (+https://github.com/seagnalvibe/reverb-gen)"
+
 # ----------------------------------------------------------------------------
 # CONFIGURATION (zone demo : Golfe du Lion, hiver)
 # ----------------------------------------------------------------------------
@@ -136,6 +140,8 @@ CONFIG = {
     "searay_sp_db": -70.0,
     # Exports GeoTIFF : tranches (frequence kHz, heures UTC, pas en m)
     "geotiff": {"freq_khz": 12.0, "hours_utc": [2, 14], "depth_step_m": 50.0},
+    # User-Agent des requetes HTTP (--user-agent pour surcharger)
+    "user_agent": DEFAULT_USER_AGENT,
     # Repertoire de sortie
     "outdir": "out",
 }
@@ -164,7 +170,15 @@ def validate_freqs(freqs_khz, cfg):
     return f
 
 
-def _urlretrieve(url, path, timeout=180, retries=2):
+def _build_request(url, user_agent=None, accept="*/*"):
+    """Requete HTTP avec en-tetes : User-Agent descriptif + Accept du contenu."""
+    import urllib.request
+    headers = {"User-Agent": user_agent or DEFAULT_USER_AGENT,
+               "Accept": accept}
+    return urllib.request.Request(url, headers=headers)
+
+
+def _urlretrieve(url, path, timeout=180, retries=2, user_agent=None, accept="*/*"):
     """Telechargement direct (sans proxy) : essais + tmp + renommage atomique.
 
     En cas d'echec reseau, leve RuntimeError avec l'URL et la piste fichier
@@ -174,11 +188,12 @@ def _urlretrieve(url, path, timeout=180, retries=2):
     import tempfile
     import time
     import urllib.request
+    req = _build_request(url, user_agent=user_agent, accept=accept)
     last = None
     for attempt in range(1, max(1, int(retries)) + 1):
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".part")
         try:
-            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=timeout) as r:
+            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(req, timeout=timeout) as r:
                 shutil.copyfileobj(r, out)
             os.replace(tmp, path)
             return path
@@ -353,11 +368,13 @@ def chlorophyll_emodnet_url(cfg, date, lat, lon):
     return cfg["chlorophyll"]["emodnet_url"] + quote(query, safe="?()[]:.,-=&")
 
 
-def download_chlorophyll_emodnet(path, cfg, date, lat, lon, timeout=180, retries=2):
+def download_chlorophyll_emodnet(path, cfg, date, lat, lon, timeout=180, retries=2,
+                                 user_agent=None):
     """Telecharge le CSV chlorophylle EMODnet (DIVAnd saisonnier Med, 0-600 m)."""
     url = chlorophyll_emodnet_url(cfg, date, lat, lon)
     print("Telechargement chlorophylle EMODnet :", url)
-    return _urlretrieve(url, path, timeout=timeout, retries=retries)
+    return _urlretrieve(url, path, timeout=timeout, retries=retries,
+                        user_agent=user_agent, accept="text/csv")
 
 
 # Alias historique : --chl auto designait la source EMODnet.
@@ -377,11 +394,13 @@ def chlorophyll_erddap_url(cfg, date, lat, lon):
     return cfg["chlorophyll"]["erddap_url"] + quote(query, safe="?()[]:.,-=&")
 
 
-def download_chlorophyll_erddap(path, cfg, date, lat, lon, timeout=180, retries=2):
+def download_chlorophyll_erddap(path, cfg, date, lat, lon, timeout=180, retries=2,
+                                user_agent=None):
     """Telecharge le CSV MODIS Aqua (surface satellite uniquement)."""
     url = chlorophyll_erddap_url(cfg, date, lat, lon)
     print("Telechargement chlorophylle ERDDAP (MODIS Aqua) :", url)
-    return _urlretrieve(url, path, timeout=timeout, retries=retries)
+    return _urlretrieve(url, path, timeout=timeout, retries=retries,
+                        user_agent=user_agent, accept="text/csv")
 
 
 def read_chlorophyll_modis_csv(path):
@@ -547,7 +566,7 @@ def bathymetry_url_tif(cfg, lat, lon):
 
 
 def download_bathymetry(outdir, cfg, lat, lon, timeout=180, retries=2,
-                        data_dir=None, offline=False):
+                        data_dir=None, offline=False, user_agent=None):
     """DTM EMODnet (WCS) : cache local d'abord (--data-dir puis outdir).
 
     En mode --offline aucun appel reseau : il faut le fichier local
@@ -567,7 +586,8 @@ def download_bathymetry(outdir, cfg, lat, lon, timeout=180, retries=2,
             "Telecharge manuellement :\n  %s\npuis relance avec --bathy %s"
             % (dest, url, os.path.join(data_dir or outdir, name)))
     print("Telechargement bathymetrie EMODnet :", url)
-    return _urlretrieve(url, dest, timeout=timeout, retries=retries)
+    return _urlretrieve(url, dest, timeout=timeout, retries=retries,
+                        user_agent=user_agent, accept="image/tiff")
 
 
 def read_bathymetry_tif(path):
@@ -881,13 +901,15 @@ def quicklook_png(path, sv_db, depth_m, freqs_khz, lat, lon, hours_utc, cfg,
 # ----------------------------------------------------------------------------
 def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
          freqs=None, hours=None, date_str=None,
-         timeout=180, retries=2, data_dir=None, offline=False):
+         timeout=180, retries=2, data_dir=None, offline=False,
+         user_agent=None):
     date = dt.datetime.strptime(date_str or cfg["date"], "%Y-%m-%d")
     lat = np.arange(cfg["lat_min"], cfg["lat_max"] + 1e-9, cfg["dlat"])
     lon = np.arange(cfg["lon_min"], cfg["lon_max"] + 1e-9, cfg["dlon"])
     depth = np.arange(0.0, cfg["depth_max"] + 1e-9, cfg["ddepth"])
     freqs = validate_freqs(freqs or cfg["freqs_khz"], cfg)
     hours = list(hours) if hours else list(cfg["hours_utc"])
+    ua = user_agent or cfg.get("user_agent") or DEFAULT_USER_AGENT
     n_elem = len(hours) * len(freqs) * len(depth) * lat.size * lon.size
     if n_elem > 2e8:
         raise ValueError("grille trop grosse (%d elements, float32 ~%.0f Mo) : "
@@ -906,7 +928,7 @@ def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
         if bathy_src == "auto":
             tif = download_bathymetry(outdir, cfg, lat, lon, timeout=timeout,
                                       retries=retries, data_dir=data_dir,
-                                      offline=offline)
+                                      offline=offline, user_agent=ua)
         else:
             tif = bathy_src
         lats_b, lons_b, depth_b = read_bathymetry_tif(tif)
@@ -941,10 +963,12 @@ def main(cfg, modele="apl_uw", chl_src=None, bathy_src=None,
                 chl_csv = os.path.join(outdir, name)
                 if chl_source == "emodnet":
                     download_chlorophyll_emodnet(chl_csv, cfg, date, lat, lon,
-                                                 timeout=timeout, retries=retries)
+                                                 timeout=timeout, retries=retries,
+                                                 user_agent=ua)
                 else:
                     download_chlorophyll_erddap(chl_csv, cfg, date, lat, lon,
-                                                timeout=timeout, retries=retries)
+                                                timeout=timeout, retries=retries,
+                                                user_agent=ua)
         else:
             chl_csv = chl_src
             hdr = open(chl_csv).readline()
@@ -1062,6 +1086,10 @@ if __name__ == "__main__":
     ap.add_argument("--offline", action="store_true",
                     help="aucun appel reseau : exige les fichiers locaux "
                          "(--chl/--bathy FICHIER ou --data-dir)")
+    ap.add_argument("--user-agent", default=None,
+                    help="User-Agent envoye (defaut : identifiant reverb-gen ; "
+                         "certains serveurs exigent un UA non standard — "
+                         "identifiez votre client, ex. 'mon-projet/1.0 (contact@ex.org)')")
     args = ap.parse_args()
     cfg = copy.deepcopy(CONFIG)
     if args.config:
@@ -1084,4 +1112,5 @@ if __name__ == "__main__":
     main(cfg, args.modele, chl_src=chl_src, bathy_src=bathy_src,
          freqs=freqs, hours=hours, date_str=args.date,
          timeout=args.timeout, retries=args.retries,
-         data_dir=args.data_dir, offline=args.offline)
+         data_dir=args.data_dir, offline=args.offline,
+         user_agent=args.user_agent)
